@@ -1,0 +1,643 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D 交互式拍立得相机集</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & ReactDOM CDN -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel 用于解析 JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        @keyframes progress {
+            from { width: 0%; }
+            to { width: 100%; }
+        }
+        .cubic-bezier {
+            transition-timing-function: cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+        /* 胶片噪点纹理 */
+        .film-noise {
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+            mix-blend-mode: overlay;
+        }
+        /* 暗角效果 */
+        .vignette {
+            background: radial-gradient(circle, rgba(0,0,0,0) 40%, rgba(0,0,0,0.5) 100%);
+            mix-blend-mode: multiply;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // --- 摄影大师的 6 款精调相机库 ---
+        const CAMERAS = [
+            {
+                id: 'classic',
+                name: '天空之蓝 Classic',
+                themeColor: '#aeddf4',
+                shadowColor: '#89c5e6',
+                shutterColor: '#f03e3e',
+                shutterShadow: '#c92a2a',
+                lensRing: '#8ec6e6',
+                textColor: 'text-white/60',
+                desc: '经典柔和色调，自带温柔岁月感。',
+                filterName: '怀旧 Nostalgia',
+                // 调优：降低深褐色，保持亮度和清晰度
+                filterCSS: 'sepia(0.2) contrast(1.05) brightness(1.05) saturate(1.1)',
+                noiseOpacity: 0.1,
+                overlay: <div className="absolute inset-0 bg-[#ffb56b] opacity-[0.08] mix-blend-color pointer-events-none"></div>
+            },
+            {
+                id: 'noir',
+                name: '暗夜黑白 Noir',
+                themeColor: '#2d2d2d',
+                shadowColor: '#1a1a1a',
+                shutterColor: '#eab308', 
+                shutterShadow: '#ca8a04',
+                lensRing: '#3d3d3d',
+                textColor: 'text-white/40',
+                desc: '细腻黑白灰阶，充满纪实摄影张力。',
+                filterName: '单色 Monochrome',
+                // 调优：降低了过分的对比度，确保人脸细节不丢失
+                filterCSS: 'grayscale(100%) contrast(1.15) brightness(1.05)',
+                noiseOpacity: 0.15, 
+                overlay: <div className="absolute inset-0 bg-black opacity-[0.15] mix-blend-overlay pointer-events-none"></div>
+            },
+            {
+                id: 'pop',
+                name: '波普明黄 Pop',
+                themeColor: '#fde047',
+                shadowColor: '#eab308',
+                shutterColor: '#ec4899', 
+                shutterShadow: '#be185d',
+                lensRing: '#fef08a',
+                textColor: 'text-black/30',
+                desc: '高饱和色彩复原，致敬 80 年代街头。',
+                filterName: '霓虹 Neon',
+                // 调优：确保饱和度提升但不刺眼
+                filterCSS: 'contrast(1.05) saturate(1.35) hue-rotate(5deg) brightness(1.05)',
+                noiseOpacity: 0.08,
+                overlay: <div className="absolute inset-0 opacity-30 mix-blend-screen pointer-events-none" style={{background: 'radial-gradient(circle at 80% 20%, rgba(236,72,153,0.3), transparent 50%)'}}></div>
+            },
+            {
+                id: 'emerald',
+                name: '森野墨绿 Emerald',
+                themeColor: '#2f5233',
+                shadowColor: '#1a361e',
+                shutterColor: '#f9a826', 
+                shutterShadow: '#c27e12',
+                lensRing: '#4b7551',
+                textColor: 'text-white/40',
+                desc: '低调沉稳，模拟富士经典胶卷色调。',
+                filterName: '胶片 Film',
+                filterCSS: 'contrast(1.05) saturate(0.95) sepia(0.15) hue-rotate(-15deg)',
+                noiseOpacity: 0.12,
+                overlay: <div className="absolute inset-0 bg-green-900 opacity-[0.1] mix-blend-color pointer-events-none"></div>
+            },
+            {
+                id: 'cherry',
+                name: '樱花粉柔 Cherry',
+                themeColor: '#fbcfe8',
+                shadowColor: '#f472b6',
+                shutterColor: '#ffffff', 
+                shutterShadow: '#e5e7eb',
+                lensRing: '#fce7f3',
+                textColor: 'text-pink-500/50',
+                desc: '提升暗部亮度，呈现日系清透水光感。',
+                filterName: '清透 Pastel',
+                filterCSS: 'contrast(0.95) brightness(1.1) saturate(1.1)',
+                noiseOpacity: 0.05,
+                overlay: <div className="absolute inset-0 bg-pink-200 opacity-[0.15] mix-blend-screen pointer-events-none"></div>
+            },
+            {
+                id: 'silver',
+                name: '银色幻影 Silver',
+                themeColor: '#e5e7eb',
+                shadowColor: '#9ca3af',
+                shutterColor: '#ef4444', 
+                shutterShadow: '#b91c1c',
+                lensRing: '#d1d5db',
+                textColor: 'text-gray-500',
+                desc: '原彩无损画质，保留最真实的高清瞬间。',
+                filterName: '原彩 HD',
+                filterCSS: 'contrast(1.05) brightness(1.05) saturate(1.05)',
+                noiseOpacity: 0.02,
+                overlay: null
+            }
+        ];
+
+        const Icon = ({ name, size = 24, className = "" }) => {
+            const icons = {
+                camera: (
+                    <>
+                        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+                        <circle cx="12" cy="13" r="4"/>
+                    </>
+                ),
+                cameraSwitch: (
+                    <>
+                        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+                        <path d="M16 13a4 4 0 0 0-8 0"/>
+                        <polyline points="6 11 8 13 10 11"/>
+                        <path d="M8 13a4 4 0 0 0 8 0"/>
+                        <polyline points="14 15 16 13 18 15"/>
+                    </>
+                ),
+                download: (
+                    <>
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="7 10 12 15 17 10"/>
+                        <line x1="12" y1="15" x2="12" y2="3"/>
+                    </>
+                ),
+                rotate: (
+                    <>
+                        <path d="M23 4v6h-6"/>
+                        <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+                    </>
+                ),
+                alert: (
+                    <>
+                        <circle cx="12" cy="12" r="10"/>
+                        <line x1="12" y1="8" x2="12" y2="12"/>
+                        <line x1="12" y1="16" x2="12.01" y2="16"/>
+                    </>
+                ),
+                chevronLeft: <polyline points="15 18 9 12 15 6"/>,
+                chevronRight: <polyline points="9 18 15 12 9 6"/>
+            };
+            return (
+                <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+                    {icons[name]}
+                </svg>
+            );
+        };
+
+        const App = () => {
+            const [selectedCamera, setSelectedCamera] = useState(null);
+            
+            // 3D Carousel State
+            const [carouselIndex, setCarouselIndex] = useState(0);
+
+            const [step, setStep] = useState(0);
+            const [photoUrl, setPhotoUrl] = useState(null);
+            const [flash, setFlash] = useState(false);
+            const [error, setError] = useState(null);
+            const [facingMode, setFacingMode] = useState('user');
+            
+            const videoRef = useRef(null);
+            const canvasRef = useRef(null);
+            const streamRef = useRef(null);
+            const fileInputRef = useRef(null);
+            const photoContainerRef = useRef(null);
+            const latestRequestedMode = useRef('user');
+
+            // --- 3D Carousel 控制逻辑 ---
+            const totalCameras = CAMERAS.length;
+            const angleStep = 360 / totalCameras;
+            
+            const handleNext = () => setCarouselIndex(prev => prev + 1);
+            const handlePrev = () => setCarouselIndex(prev => prev - 1);
+            
+            // 计算当前正中央的相机索引
+            const activeIndex = ((carouselIndex % totalCameras) + totalCameras) % totalCameras;
+
+            const handleSelectCamera = () => {
+                setSelectedCamera(CAMERAS[activeIndex]);
+                setStep(0);
+                setPhotoUrl(null);
+                setError(null);
+            };
+
+            const handleBackToSelection = () => {
+                if (streamRef.current) {
+                    streamRef.current.getTracks().forEach(track => track.stop());
+                    streamRef.current = null;
+                }
+                setSelectedCamera(null);
+                setStep(0);
+                setPhotoUrl(null);
+            };
+
+            // --- 拍照核心逻辑 ---
+            const startPreview = async (mode = facingMode) => {
+                setError(null);
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                    setError("当前环境不支持实时预览，请点击下方按钮使用兼容模式");
+                    return;
+                }
+                try {
+                    latestRequestedMode.current = mode;
+                    let stream;
+                    try {
+                        stream = await navigator.mediaDevices.getUserMedia({
+                            video: { facingMode: { exact: mode }, width: { ideal: 1024 }, height: { ideal: 1024 } },
+                            audio: false
+                        });
+                    } catch(e) {
+                        stream = await navigator.mediaDevices.getUserMedia({
+                            video: { facingMode: mode, width: { ideal: 1024 }, height: { ideal: 1024 } },
+                            audio: false
+                        });
+                    }
+
+                    if (latestRequestedMode.current !== mode) {
+                        stream.getTracks().forEach(track => track.stop());
+                        return;
+                    }
+                    streamRef.current = stream;
+                    setFacingMode(mode);
+                    setStep(1);
+                } catch (err) {
+                    setError("摄像头访问失败，请确认权限或使用兼容模式");
+                }
+            };
+
+            const toggleCamera = async (e) => {
+                if (e) e.stopPropagation();
+                const newMode = facingMode === 'user' ? 'environment' : 'user';
+                setFacingMode(newMode);
+                latestRequestedMode.current = newMode;
+                if (streamRef.current) {
+                    streamRef.current.getTracks().forEach(track => track.stop());
+                    streamRef.current = null;
+                }
+                try {
+                    let stream;
+                    try {
+                        stream = await navigator.mediaDevices.getUserMedia({
+                            video: { facingMode: { exact: newMode }, width: { ideal: 1024 }, height: { ideal: 1024 } },
+                            audio: false
+                        });
+                    } catch(e) {
+                        stream = await navigator.mediaDevices.getUserMedia({
+                            video: { facingMode: newMode, width: { ideal: 1024 }, height: { ideal: 1024 } },
+                            audio: false
+                        });
+                    }
+                    if (latestRequestedMode.current !== newMode) {
+                        stream.getTracks().forEach(track => track.stop());
+                        return;
+                    }
+                    streamRef.current = stream;
+                    if (videoRef.current) videoRef.current.srcObject = stream;
+                } catch (err) {
+                    setError("无法切换摄像头，可能设备受限");
+                }
+            };
+
+            const handleFallbackUpload = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                
+                setError(null);
+                setFlash(true);
+                setTimeout(() => setFlash(false), 150);
+
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        const canvas = canvasRef.current;
+                        const context = canvas.getContext('2d');
+                        const size = Math.min(img.width, img.height);
+                        canvas.width = size;
+                        canvas.height = size;
+                        
+                        context.save();
+                        context.drawImage(img, (img.width - size) / 2, (img.height - size) / 2, size, size, 0, 0, size, size);
+                        context.restore();
+                        
+                        setPhotoUrl(canvas.toDataURL('image/png'));
+                        setStep(2);
+                        setTimeout(() => setStep(3), 4500);
+                    };
+                    img.src = event.target.result;
+                };
+                reader.readAsDataURL(file);
+            };
+
+            useEffect(() => {
+                if (step === 1 && videoRef.current && streamRef.current) {
+                    videoRef.current.srcObject = streamRef.current;
+                }
+            }, [step]);
+
+            const takePhoto = () => {
+                if (step !== 1 || !videoRef.current) return;
+                const video = videoRef.current;
+                if (video.readyState < 2 || video.videoWidth === 0) return;
+
+                setFlash(true);
+                setTimeout(() => setFlash(false), 150);
+
+                const canvas = canvasRef.current;
+                const context = canvas.getContext('2d');
+                const size = Math.min(video.videoWidth, video.videoHeight);
+                canvas.width = size;
+                canvas.height = size;
+
+                context.save();
+                if (facingMode === 'user') {
+                    context.translate(canvas.width, 0);
+                    context.scale(-1, 1);
+                }
+                context.drawImage(video, (video.videoWidth - size) / 2, (video.videoHeight - size) / 2, size, size, 0, 0, size, size);
+                context.restore();
+                
+                setPhotoUrl(canvas.toDataURL('image/png'));
+                setStep(2);
+                
+                if (streamRef.current) {
+                    streamRef.current.getTracks().forEach(track => track.stop());
+                    streamRef.current = null;
+                }
+                setTimeout(() => setStep(3), 4500);
+            };
+
+            const handleAgain = () => {
+                setStep(0);
+                setPhotoUrl(null);
+                setError(null);
+            };
+
+            const downloadPhoto = () => {
+                const a = document.createElement('a'); 
+                a.href = photoUrl; 
+                a.download = `retro_instax_${selectedCamera.id}_${Date.now()}.png`; 
+                a.click();
+            };
+
+            // ================= 视图 1: 3D 环形相机选择界面 =================
+            if (!selectedCamera) {
+                return (
+                    <div className="fixed inset-0 bg-[#e8e4d9] flex flex-col items-center justify-center font-sans text-[#2d2d2d] overflow-hidden">
+                        <div className="absolute top-12 text-center z-50">
+                            <h1 className="text-3xl font-black mb-2 tracking-tight">Camera Studio</h1>
+                            <p className="text-sm opacity-60 font-medium">旋转轮盘，挑选你的专属滤镜机型</p>
+                        </div>
+
+                        {/* 3D 旋转舞台 */}
+                        <div className="relative w-full h-[500px] flex justify-center items-center mt-8" style={{ perspective: '1200px' }}>
+                            <div 
+                                className="relative w-[260px] h-[360px] transition-transform duration-700 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+                                style={{
+                                    transformStyle: 'preserve-3d',
+                                    transform: `translateZ(-280px) rotateY(${carouselIndex * -angleStep}deg)`
+                                }}
+                            >
+                                {CAMERAS.map((cam, i) => {
+                                    // 判断当前这张卡片是否在正前方
+                                    const isFront = activeIndex === i;
+                                    
+                                    return (
+                                        <div 
+                                            key={cam.id}
+                                            className={`absolute top-0 left-0 w-full h-full bg-white rounded-3xl p-5 shadow-2xl border border-gray-100 flex flex-col transition-opacity duration-500 ${isFront ? 'opacity-100' : 'opacity-30'}`}
+                                            style={{
+                                                transform: `rotateY(${i * angleStep}deg) translateZ(280px)`,
+                                                backfaceVisibility: 'hidden'
+                                            }}
+                                        >
+                                            <div className="w-full h-40 rounded-2xl flex flex-col items-center justify-center mb-4 relative overflow-hidden" style={{backgroundColor: cam.themeColor}}>
+                                                <div className="w-16 h-16 rounded-full border-4 flex items-center justify-center shadow-inner" style={{borderColor: cam.lensRing, backgroundColor: cam.shadowColor}}>
+                                                    <div className="w-10 h-10 bg-black rounded-full border-4 border-gray-800 shadow-[inset_0_0_10px_black] relative overflow-hidden"></div>
+                                                </div>
+                                                <div className="absolute left-3 top-6 w-6 h-6 rounded-full border-2 shadow-md" style={{backgroundColor: cam.shutterColor, borderColor: cam.shutterShadow}}></div>
+                                                <div className="absolute right-3 top-4 w-4 h-8 bg-white/80 rounded-full"></div>
+                                            </div>
+
+                                            <div className="flex-1 flex flex-col justify-between">
+                                                <div>
+                                                    <h2 className="text-lg font-black mb-1 leading-tight">{cam.name}</h2>
+                                                    <p className="text-[11px] text-gray-500 leading-snug">{cam.desc}</p>
+                                                </div>
+                                                
+                                                <div className="flex items-center gap-2 bg-gray-50 rounded-lg p-2 mt-2">
+                                                    <div className="w-5 h-5 rounded-full overflow-hidden relative border border-gray-200 shadow-inner flex-shrink-0">
+                                                        <div className="w-full h-full bg-gradient-to-br from-blue-400 to-yellow-300" style={{filter: cam.filterCSS}}></div>
+                                                        {cam.overlay}
+                                                    </div>
+                                                    <div className="flex flex-col">
+                                                        <span className="text-[9px] font-bold text-gray-400 uppercase">专属滤镜</span>
+                                                        <span className="text-[11px] font-black text-gray-700">{cam.filterName}</span>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+
+                        {/* 底部控制台 */}
+                        <div className="absolute bottom-12 w-full flex flex-col items-center gap-6 z-50">
+                            <div className="flex items-center gap-6">
+                                <button onClick={handlePrev} className="p-3 rounded-full bg-white shadow-lg border border-gray-100 hover:bg-gray-50 active:scale-90 transition-all text-gray-600">
+                                    <Icon name="chevronLeft" size={24} />
+                                </button>
+                                
+                                <button 
+                                    onClick={handleSelectCamera}
+                                    className="px-10 py-4 bg-[#2d2d2d] text-white rounded-full font-black text-sm shadow-[0_10px_20px_rgba(0,0,0,0.2)] hover:bg-black hover:-translate-y-1 active:translate-y-1 transition-all flex items-center gap-2"
+                                >
+                                    <Icon name="camera" size={18} />
+                                    拿起这台相机
+                                </button>
+
+                                <button onClick={handleNext} className="p-3 rounded-full bg-white shadow-lg border border-gray-100 hover:bg-gray-50 active:scale-90 transition-all text-gray-600">
+                                    <Icon name="chevronRight" size={24} />
+                                </button>
+                            </div>
+                            
+                            {/* 分页圆点指示器 */}
+                            <div className="flex gap-2">
+                                {CAMERAS.map((_, idx) => (
+                                    <div key={idx} className={`w-1.5 h-1.5 rounded-full transition-all duration-300 ${activeIndex === idx ? 'bg-gray-800 w-4' : 'bg-gray-300'}`} />
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+
+            // ================= 视图 2: 拍照主界面 =================
+            return (
+                <div className="fixed inset-0 bg-[#e8e4d9] flex flex-col items-center justify-center overflow-hidden select-none font-sans">
+                    {flash && <div className="fixed inset-0 bg-white z-[100] pointer-events-none" />}
+                    
+                    {/* 返回相机库按钮 */}
+                    {(step === 0 || step === 1) && (
+                        <button 
+                            onClick={handleBackToSelection}
+                            className="absolute top-8 left-8 p-3 bg-white/40 backdrop-blur-md text-[#4a4a4a] border border-white/30 rounded-full shadow-lg hover:bg-white active:scale-95 transition-all z-50 flex items-center justify-center"
+                        >
+                            <Icon name="chevronLeft" size={24} />
+                        </button>
+                    )}
+
+                    <div className="absolute top-10 text-[#5d5d5d] text-[10px] tracking-[0.4em] font-bold opacity-40 uppercase text-center w-full px-16">
+                        {selectedCamera.name} • {selectedCamera.filterName}
+                    </div>
+
+                    <div className="relative flex items-center justify-center w-full max-w-2xl h-[700px]">
+                        
+                        {/* --- 动态相机实体 --- */}
+                        <div className={`relative z-20 w-[340px] h-[400px] transition-all duration-1000 ease-in-out ${step >= 2 ? 'translate-x-[-120px] scale-90 opacity-40 blur-[2px] -rotate-3' : 'rotate-0'}`}>
+                            <div 
+                                className="absolute inset-0 rounded-[70px] transition-colors duration-700" 
+                                style={{
+                                    backgroundColor: selectedCamera.themeColor,
+                                    boxShadow: `0 18px 0 ${selectedCamera.shadowColor}, 0 35px 70px rgba(0,0,0,0.25)`,
+                                    borderTop: '1.5px solid rgba(255,255,255,0.4)'
+                                }} 
+                            />
+                            
+                            <div className="absolute left-12 top-12 w-12 h-16 bg-[#111] rounded-xl border-[4px] shadow-[inset_0_4px_10px_black] transition-colors duration-700" style={{borderColor: selectedCamera.lensRing}} />
+                            
+                            <div className="absolute right-12 top-10 w-14 h-24 bg-gradient-to-b from-gray-100 to-gray-300 rounded-full border-[4px] flex flex-col items-center py-3 shadow-inner transition-colors duration-700" style={{borderColor: selectedCamera.lensRing}}>
+                                <div className="w-8 h-12 bg-white rounded-full blur-[2px] opacity-90 shadow-[0_0_15px_white]" />
+                            </div>
+
+                            <div className={`absolute left-1/2 -translate-x-1/2 top-7 font-black text-[12px] tracking-tighter uppercase italic transition-colors duration-700 ${selectedCamera.textColor}`}>
+                                instax <span className="font-light tracking-normal lowercase">mini</span>
+                            </div>
+
+                            {/* 快门按钮 */}
+                            <button 
+                                onClick={() => step === 0 ? startPreview() : takePhoto()} 
+                                disabled={step >= 2} 
+                                className={`absolute left-6 top-32 w-28 h-28 rounded-full border-[8px] flex items-center justify-center transition-all duration-700 active:translate-y-2 ${step >= 2 ? 'opacity-50 grayscale cursor-not-allowed' : 'hover:brightness-110'}`}
+                                style={{
+                                    backgroundColor: selectedCamera.shutterColor,
+                                    borderColor: selectedCamera.shutterShadow,
+                                    boxShadow: `0 10px 0 ${selectedCamera.shutterShadow}, 0 20px 40px rgba(0,0,0,0.35)`
+                                }}
+                            >
+                                <div className="w-16 h-16 rounded-full border-4 border-white/20 flex items-center justify-center">
+                                    <div className="w-8 h-8 bg-white rounded-full blur-[4px] opacity-30" />
+                                </div>
+                            </button>
+
+                            {/* 镜头切换按钮 */}
+                            {(step === 0 || step === 1) && !error && (
+                                <button 
+                                    onClick={toggleCamera} 
+                                    className="absolute right-5 top-40 w-14 h-14 rounded-full border-[4px] flex items-center justify-center transition-all duration-700 active:translate-y-1 hover:brightness-110 z-30"
+                                    style={{
+                                        backgroundColor: selectedCamera.lensRing,
+                                        borderColor: selectedCamera.shadowColor,
+                                        boxShadow: `0 5px 0 ${selectedCamera.shadowColor}, 0 10px 20px rgba(0,0,0,0.2)`
+                                    }}
+                                    title="切换摄像头"
+                                >
+                                    <div className="w-9 h-9 rounded-full border-2 border-white/40 flex items-center justify-center">
+                                        <Icon name="cameraSwitch" size={18} className="text-white drop-shadow-md" />
+                                    </div>
+                                </button>
+                            )}
+
+                            {/* 镜头组件 */}
+                            <div className="absolute left-1/2 -translate-x-1/2 top-24 w-64 h-64 rounded-full shadow-inner flex items-center justify-center p-3 transition-colors duration-700" style={{backgroundColor: selectedCamera.lensRing}}>
+                                <div className="w-full h-full bg-[#fcfdfe] rounded-full shadow-xl border-[10px] flex items-center justify-center overflow-hidden relative transition-colors duration-700" style={{borderColor: selectedCamera.shadowColor}}>
+                                    <div className="w-44 h-44 bg-[#0a0a0a] rounded-full border-[12px] border-[#222] shadow-[inset_0_0_40px_black] flex items-center justify-center relative">
+                                        {step >= 1 ? (
+                                            <video 
+                                                ref={videoRef} 
+                                                autoPlay 
+                                                muted 
+                                                playsInline 
+                                                x5-video-player-type="h5" 
+                                                x5-playsinline="true"
+                                                className={`w-full h-full object-cover rounded-full ${facingMode === 'user' ? 'scale-x-[-1]' : ''}`} 
+                                            />
+                                        ) : (
+                                            <Icon name="camera" size={48} className="text-white/10" />
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* --- 拍立得相纸 --- */}
+                        {photoUrl && (
+                            <div className={`absolute z-30 transition-all duration-[2000ms] cubic-bezier ${step === 2 ? 'right-[5%] top-[8%] scale-[0.35] rotate-[18deg]' : 'left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 scale-100 rotate-[-1deg] shadow-[0_50px_100px_rgba(0,0,0,0.4)]'}`}>
+                                <div className="bg-white p-5 pb-28 shadow-2xl border border-gray-50 relative" ref={photoContainerRef}>
+                                    
+                                    <div className="w-[320px] h-[320px] bg-[#1a1a1a] overflow-hidden relative shadow-inner">
+                                        <img 
+                                            src={photoUrl} 
+                                            className={`w-full h-full object-cover transition-all duration-[5000ms] ease-out
+                                            ${step === 2 ? 'opacity-10 blur-2xl brightness-[2.5] sepia contrast-200' : 'opacity-100 blur-0'}`} 
+                                            style={{ filter: step === 3 ? selectedCamera.filterCSS : 'none' }}
+                                        />
+                                        
+                                        {/* 叠加层 */}
+                                        {step === 3 && (
+                                            <>
+                                                <div className="absolute inset-0 film-noise pointer-events-none" style={{opacity: selectedCamera.noiseOpacity}}></div>
+                                                <div className="absolute inset-0 vignette pointer-events-none"></div>
+                                                {selectedCamera.overlay}
+                                            </>
+                                        )}
+
+                                        {step === 2 && (
+                                            <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-white/20 backdrop-blur-sm">
+                                                <div className="w-32 h-1 bg-white/30 rounded-full overflow-hidden">
+                                                    <div className="h-full bg-white" style={{ animation: 'progress 5s linear' }} />
+                                                </div>
+                                                <span className="text-white text-[10px] tracking-[0.5em] font-black">DEVELOPING</span>
+                                            </div>
+                                        )}
+                                    </div>
+                                    
+                                    <div className="mt-8 w-full flex justify-between items-end text-[#999] text-[10px]">
+                                        <div><div className="h-0.5 w-14 bg-gray-100 mb-1"/>{selectedCamera.filterName.toUpperCase()}</div>
+                                        <div>{new Date().toLocaleDateString()}</div>
+                                    </div>
+
+                                    {step === 3 && (
+                                        <div className="absolute -bottom-16 left-0 w-full flex justify-center gap-6 animate-in fade-in slide-in-from-top-4">
+                                            <button onClick={handleAgain} className="flex items-center gap-2 px-6 py-3 bg-white text-[#2d2d2d] border-2 border-[#2d2d2d] rounded-full text-xs font-black shadow-lg hover:bg-gray-50 active:scale-95 transition-all">
+                                                <Icon name="rotate" size={16} /> 再拍一张
+                                            </button>
+                                            <button onClick={downloadPhoto} className="flex items-center gap-2 px-6 py-3 bg-[#2d2d2d] text-white rounded-full text-xs font-black shadow-lg hover:bg-black active:scale-95 transition-all">
+                                                <Icon name="download" size={16} /> 保存照片
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
+                    {error && (
+                        <div className="fixed top-20 bg-red-50 text-red-600 px-6 py-4 rounded-2xl shadow-xl z-[100] flex flex-col items-center gap-3 max-w-[85%] text-center border border-red-200">
+                            <div className="flex items-center gap-2 font-bold"><Icon name="alert" size={18}/>{error}</div>
+                            <button onClick={() => fileInputRef.current && fileInputRef.current.click()} className="px-5 py-2.5 bg-[#f03e3e] text-white rounded-full text-xs font-black shadow-md hover:bg-red-700 active:scale-95 transition-all">
+                                唤起系统相机 (兼容模式)
+                            </button>
+                        </div>
+                    )}
+                    
+                    {step === 0 && !error && <div className="absolute bottom-20 px-8 py-4 bg-white/40 backdrop-blur-xl rounded-full text-[#4a4a4a] text-xs font-black tracking-[0.3em] animate-bounce">PUSH SHUTTER TO START</div>}
+                    
+                    <canvas ref={canvasRef} className="hidden" />
+                    <input type="file" accept="image/*" capture="user" ref={fileInputRef} onChange={handleFallbackUpload} className="hidden" />
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
